@@ -2,10 +2,14 @@
   "name": "gpu-monitor",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=18.17.0"
+  },
   "scripts": {
-    "dev": "next dev -p 3001",
-    "build": "next build",
-    "start": "next start -p 3001",
+    "check-node": "node scripts/check-node.mjs",
+    "dev": "npm run check-node && next dev -p 3001",
+    "build": "npm run check-node && next build",
+    "start": "npm run check-node && next start -p 3001",
     "lint": "next lint"
   },
   "dependencies": {
