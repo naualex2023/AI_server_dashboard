@@ -88,8 +88,53 @@ nvidia-smi / sensors -j / ipmitool
 |------|---------|
 | `.env.local` | `PORT=3001` (scripts already use `-p 3001`) |
 | `src/lib/constants.ts` | Thresholds, poll interval, history length, ipmitool command |
-| `src/app/api/stream/route.ts` | SSE endpoint |
+| `src/app/api/stream/route.ts` | SSE endpoint (live metrics) |
+| `src/app/api/health/route.ts` | Health endpoint (liveness / readiness) |
 | `src/lib/collectors/*` | System metric collectors |
+
+## Health checking
+
+`GET /api/health` is a lightweight probe for uptime monitors, load balancers,
+and nginx `proxy_next_upstream`. Two modes:
+
+```bash
+# 1. Liveness (fast, never shells out) — use for simple "is it up?" checks.
+curl -i http://localhost:3001/api/health
+# -> 200 { status:"ok", pid, uptimeSeconds, tools:{nvidia-smi,sensors,ipmitool} }
+
+# 2. Readiness (also runs the collectors) — use to confirm data sources work.
+curl -i 'http://localhost:3001/api/health?probe=true'
+# -> 200 with collectors:{gpuCount,cpu,fanCount,...} when data flows,
+# -> 503 when a required tool is installed but returns nothing (degraded).
+```
+
+Rule of thumb for triaging a `502 Bad Gateway` from nginx:
+
+| What you see | Meaning | Next step |
+|---|---|---|
+| nginx returns `502` | upstream (port 3001) not responding | app process is down — check `systemctl status gpu-monitor` / `pm2 status` |
+| `/api/health` → `200` | Node alive, tools may or may not work | app is fine; if data is missing, try `?probe=true` |
+| `/api/health?probe=true` → `503` | a collector's tool is broken/empty | check the tool directly (`nvidia-smi`, `sensors -j`, `ipmitool`) |
+
+## Capacity (concurrent viewers)
+
+There is **no hard-coded client limit**, but the bottleneck is **not** the
+HTTP layer — it's per-client process spawning. Each connected browser opens
+its own SSE stream to `/api/stream`, and **each stream independently shells
+out to `nvidia-smi` + `sensors` + `sudo ipmitool` every 2 seconds**
+(see `src/lib/collectors/*`). There is no shared broadcaster yet, so for
+`N` viewers the server spawns `N × 3` child processes per tick.
+
+In practice:
+
+- **1–10 viewers:** comfortable (the intended ops-team use case).
+- **~20+ viewers:** `ipmitool`/`sensors` begin to contend; the 2s cadence
+  can slip and latency rises. There's no rate limiting / connection cap.
+- Keep port 3001 behind a firewall/VPN; do **not** expose it publicly.
+
+To serve many more viewers, refactor `/api/stream` to run the collectors
+**once** on a shared timer and fan the same snapshot out to every client
+(turns the per-tick cost from `O(viewers)` to `O(1)`), and add an auth layer.
 
 ## System prerequisites
 
@@ -105,13 +150,52 @@ sudo sensors-detect --auto
 
 NVIDIA driver + `nvidia-smi` must be present, and the app user should be in the `video` group.
 
-## Production with pm2
+## Autostart on boot (survive reboots)
+
+The dashboard only stays up after a reboot if you wire it into the init
+system. Pick **one** approach. If you saw a `502 Bad Gateway` after a
+reboot, it's almost certainly because this step was skipped.
+
+### Option A — systemd (recommended, zero extra dependencies)
+
+systemd is already on Ubuntu/Debian, so there's nothing to install (unlike
+pm2). After `npm run build`, run the included installer from the repo root:
 
 ```bash
 npm run build
-pm2 start npm --name "gpu-monitor" -- start
-pm2 save && pm2 startup
+bash scripts/install-systemd.sh
 ```
+
+`scripts/install-systemd.sh` writes `/etc/systemd/system/gpu-monitor.service`
+(pinning the real `node`/`npm` paths so the service works even with nvm),
+enables it, and starts it. It then survives reboots and auto-restarts on
+crash.
+
+```bash
+systemctl status gpu-monitor            # active (running)
+systemctl is-enabled gpu-monitor        # enabled
+sudo systemctl restart gpu-monitor      # restart after an update
+journalctl -u gpu-monitor -f            # tail logs
+```
+
+### Option B — pm2
+
+```bash
+npm run build
+npm install -g pm2                       # if 'pm2: command not found'
+pm2 start npm --name "gpu-monitor" -- start
+
+# Generate + install the systemd unit that resurrects pm2 on boot.
+# pm2 prints the exact sudo command — copy/paste it:
+pm2 startup
+pm2 save
+```
+
+> **Don't skip `pm2 startup`** — `pm2 save` alone does NOT enable boot-time
+> resurrection. Verify with `systemctl is-enabled pm2-$(whoami)` (should be
+> `enabled`).
+
+After an update, `scripts/update.sh` rebuilds and restarts pm2 in place.
 
 ## First-time install on a server (bootstrap)
 
@@ -171,7 +255,9 @@ Run it on the server after every `git push` — no Node expertise required.
 src/
 ├── app/
 │   ├── layout.tsx, page.tsx, globals.css
-│   └── api/stream/route.ts        # SSE endpoint
+│   └── api/
+│       ├── stream/route.ts        # SSE endpoint (live metrics)
+│       └── health/route.ts        # health endpoint (liveness / readiness)
 ├── lib/
 │   ├── types.ts, constants.ts, utils.ts
 │   ├── useSystemMetrics.ts        # client SSE hook
