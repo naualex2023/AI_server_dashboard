@@ -13,6 +13,42 @@ Built with **Next.js 14 (App Router)**, **Tailwind CSS**, **Recharts**, and **Se
 - **History charts** — multi-GPU temperature & utilization trends, VRAM usage, power draw.
 - **Resilient collectors** — if a tool (`nvidia-smi`, `sensors`, `ipmitool`) is unavailable, the dashboard keeps running and shows empty states.
 
+## Node.js version requirement
+
+**Next.js 14 requires Node.js ≥ 18.17.0.** Running it on an older Node
+(12/14/16, which is the default on Ubuntu 20.04/22.04 servers) fails with:
+
+```
+SyntaxError: Unexpected token '?'
+    at wrapSafe (internal/modules/cjs/loader.js:915:16)
+```
+
+because those Node versions predate optional chaining (`?.`)/nullish coalescing
+(`??`) used in Next.js's compiled output. A guard (`npm run check-node`) runs
+automatically before `dev`/`build`/`start` and will print the fix instructions
+below if the Node version is too old.
+
+### Install a modern Node — pick ONE
+
+**Option A — NodeSource apt (system-wide, recommended for servers without nvm):**
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+node -v   # should print v20.x.x
+```
+
+**Option B — nvm (per-user):**
+
+```bash
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+# close & reopen the terminal (or: source ~/.bashrc), then:
+nvm install 20
+nvm use 20
+```
+
+After installing, continue with Quick start.
+
 ## Quick start
 
 ```bash
