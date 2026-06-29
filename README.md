@@ -113,6 +113,58 @@ pm2 start npm --name "gpu-monitor" -- start
 pm2 save && pm2 startup
 ```
 
+## First-time install on a server (bootstrap)
+
+`scripts/bootstrap.sh` is **self-contained** — it does *not* depend on any other
+file in the repo, so it can be run on a fresh server where the repo isn't
+cloned yet. It installs Node 20 (via NodeSource apt — no nvm needed), clones
+the repo, installs deps, and builds.
+
+**One-liner on a fresh server** (no repo present):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/naualex2023/AI_server_dashboard/main/scripts/bootstrap.sh | bash
+```
+
+**Or, to also start under pm2:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/naualex2023/AI_server_dashboard/main/scripts/bootstrap.sh | USE_PM2=1 bash
+```
+
+**Or after a manual clone:**
+
+```bash
+git clone https://github.com/naualex2023/AI_server_dashboard.git ~/AI_server_dashboard
+cd ~/AI_server_dashboard
+bash scripts/bootstrap.sh
+```
+
+Env vars: `INSTALL_DIR` (default `~/AI_server_dashboard`), `REPO_BRANCH` (default `main`), `USE_PM2=1`.
+
+## Updating the deployment (server)
+
+After the first-time bootstrap, pull the latest code and bring the app back up in one go:
+
+```bash
+cd ~/AI_server_dashboard
+bash scripts/update.sh
+```
+
+> **Why a separate script?** `update.sh` lives *inside* the repo and uses the
+> repo's own `scripts/check-node.mjs` guard. `bootstrap.sh` is self-contained so
+> it can run *before* the repo exists. Bootstrap once → update forever after.
+
+`update.sh` does the following, step by step:
+
+1. **Fixes directory ownership** (in case the repo was cloned with `sudo`) and marks it as a git *safe.directory*.
+2. **Checks the Node version** via `scripts/check-node.mjs` — fails fast with install instructions (apt for servers, nvm for dev) before the cryptic `Unexpected token '?'` can appear.
+3. **Refreshes GitHub CLI auth** if expired, then **stashes local changes** (e.g. `.env.local`), `git pull`s, and restores the stash.
+4. **Reinstalls dependencies** — `npm ci` when a lockfile exists, otherwise `npm install`.
+5. **Rebuilds + restarts pm2** *only if* a `gpu-monitor` pm2 process exists; otherwise prints the dev/prod/pm2 commands to run manually.
+
+Run it on the server after every `git push` — no Node expertise required.
+
 ## Project structure
 
 ```
@@ -128,6 +180,27 @@ src/
     ├── dashboard/  # SystemBar, GpuCard, GpuGrid, CpuPanel, FanPanel, PowerSummary
     ├── charts/     # GpuTempChart, GpuUtilChart, MemUsageChart, PowerDrawChart
     └── ui/         # card, gauge, status-badge
+```
+
+## Troubleshooting
+
+### `SyntaxError: Unexpected token '?'` when running `npm run dev`/`start`
+
+Cause: Next.js 14 is being run on Node.js older than 18.17.0 (common on Ubuntu servers). Fix: see **Node.js version requirement** above, or just run `bash scripts/bootstrap.sh` / `bash scripts/update.sh` — the built-in guard will print exact instructions.
+
+### `dpkg: error ... trying to overwrite '/usr/include/node/common.gypi', which is also in package libnode-dev`
+
+Cause: Ubuntu 22.04 ships an old Node 12 split into packages (`libnode-dev`, `libnode72`, `nodejs-doc`) whose dev headers conflict with NodeSource's self-contained `nodejs` 20 package. The install aborts mid-way and leaves apt in a half-configured state.
+
+`scripts/bootstrap.sh` now **detects and purges these conflicting packages automatically** before installing Node 20, and has a **force-overwrite fallback** if a conflict still slips through. But if you hit this manually, recover with:
+
+```bash
+sudo dpkg --configure -a
+sudo apt-get -f install -y
+sudo apt-get remove -y libnode-dev libnode72 nodejs-doc nodejs
+sudo apt-get autoremove -y
+sudo apt-get install -y nodejs
+node -v   # should print v20.x.x
 ```
 
 ## Notes
